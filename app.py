@@ -204,7 +204,7 @@ with tab1:
                     weekly = to_weekly(daily)
                     fig = plot_candle(weekly, f"{name} 주봉 (MA5, MA20)", ma_periods=[5,20])
                     if fig:
-                        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+                        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False}, key=f"period_{tkr}")
                     else:
                         st.warning("데이터 없음")
 
@@ -218,9 +218,13 @@ with tab2:
 
     if "hi" in st.session_state:
         res = st.session_state["hi"]
-        sub1, sub2 = st.tabs([f"26주 ({len(res[26])})", f"52주 ({len(res[52])})"])
+        # 26주 신고가에서 52주 신고가 종목 제외 (52주 신고가는 정의상 26주 신고가)
+        res_26_only = res[26].copy()
+        if not res[52].empty and not res[26].empty:
+            res_26_only = res[26][~res[26]["티커"].isin(res[52]["티커"])].reset_index(drop=True)
+        sub1, sub2 = st.tabs([f"26주 ({len(res_26_only)})", f"52주 ({len(res[52])})"])
 
-        def render_block(df):
+        def render_block(df, prefix):
             if df.empty:
                 st.info("해당 종목이 없습니다."); return
             show = df[["종목명","시장","주봉 종가","주봉 고가","직전 최고"]].copy()
@@ -240,12 +244,12 @@ with tab2:
                     st.caption(f"데이터 시작: {listed_from}")
                     q = to_quarterly(daily); m = to_monthly(daily)
                     fig_q = plot_candle(q, f"{name} 분기봉 · MA3", ma_periods=[3], height=360)
-                    if fig_q: st.plotly_chart(fig_q, use_container_width=True, config={"displayModeBar": False})
+                    if fig_q: st.plotly_chart(fig_q, use_container_width=True, config={"displayModeBar": False}, key=f"{prefix}_q_{tkr}")
                     fig_m = plot_candle(m, f"{name} 월봉 · MA5, MA10", ma_periods=[5,10], height=360)
-                    if fig_m: st.plotly_chart(fig_m, use_container_width=True, config={"displayModeBar": False})
+                    if fig_m: st.plotly_chart(fig_m, use_container_width=True, config={"displayModeBar": False}, key=f"{prefix}_m_{tkr}")
 
-        with sub1: render_block(res[26])
-        with sub2: render_block(res[52])
+        with sub1: render_block(res_26_only, "w26")
+        with sub2: render_block(res[52], "w52")
 
 with st.sidebar:
     st.header("⚙️ 관리")
