@@ -90,11 +90,11 @@ def to_weekly(df):
 
 def to_monthly(df):
     if df.empty: return df
-    return df.resample("M").agg({"시가":"first","고가":"max","저가":"min","종가":"last","거래량":"sum"}).dropna(subset=["종가"])
+    return df.resample("ME").agg({"시가":"first","고가":"max","저가":"min","종가":"last","거래량":"sum"}).dropna(subset=["종가"])
 
 def to_quarterly(df):
     if df.empty: return df
-    return df.resample("Q").agg({"시가":"first","고가":"max","저가":"min","종가":"last","거래량":"sum"}).dropna(subset=["종가"])
+    return df.resample("QE").agg({"시가":"first","고가":"max","저가":"min","종가":"last","거래량":"sum"}).dropna(subset=["종가"])
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -159,7 +159,7 @@ def plot_candle(df, title, ma_periods=None, height=380):
         height=height, margin=dict(l=8,r=8,t=36,b=20), showlegend=True,
         legend=dict(orientation="h", y=1.02, x=0.5, xanchor="center", font=dict(size=10)),
         xaxis=dict(showgrid=True, gridcolor="#e5e7eb"),
-        yaxis=dict(showgrid=True, gridcolor="#e5e7eb", side="right"),
+        yaxis=dict(showgrid=True, gridcolor="#e5e7eb", side="right", type="log"),
         plot_bgcolor="white", font=dict(size=10), dragmode="pan")
     return fig
 
