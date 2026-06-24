@@ -1,99 +1,85 @@
 # -*- coding: utf-8 -*-
 """
-국내주식 스크리너 (모바일 최적화)
-- 대상: KOSPI + KOSDAQ 시가총액 200위
-- 기능 1) 기간 수익률 상위 N종목 + 주봉 차트
-- 기능 2) 주봉 26주/52주 신고가 종목 + 20년 분기봉/월봉 차트
-- 모든 가격은 수정주가 (adjusted=True)
+국내주식 스크리너 (모바일)
+데이터: FinanceDataReader (네이버 금융 기반, 수정주가)
 """
 
 import streamlit as st
 import pandas as pd
 import numpy as np
-from pykrx import stock
+import FinanceDataReader as fdr
 import plotly.graph_objects as go
 from datetime import datetime, timedelta, timezone
 
 KST = timezone(timedelta(hours=9))
+def kst_now(): return datetime.now(KST)
+def yyyymmdd_to_dash(s): return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
 
-def kst_now() -> datetime:
-    return datetime.now(KST)
-
-st.set_page_config(
-    page_title="국내주식 스크리너",
-    page_icon="📈",
-    layout="centered",
-    initial_sidebar_state="collapsed",
-)
-
+st.set_page_config(page_title="국내주식 스크리너", page_icon="📈",
+                   layout="centered", initial_sidebar_state="collapsed")
 st.markdown("""
 <style>
-    .block-container {padding: 0.75rem 0.5rem; max-width: 100%;}
-    h1 {font-size: 1.4rem !important; margin-bottom: 0.5rem;}
-    h2 {font-size: 1.15rem !important;}
-    h3 {font-size: 1.0rem !important;}
-    .stTabs [data-baseweb="tab-list"] {gap: 4px;}
-    .stTabs [data-baseweb="tab"] {padding: 8px 12px; font-size: 0.95rem;}
-    .stDataFrame {font-size: 0.85rem;}
-    div[data-testid="stExpander"] {margin-bottom: 0.5rem;}
+.block-container {padding: 0.75rem 0.5rem; max-width: 100%;}
+h1 {font-size: 1.4rem !important; margin-bottom: 0.5rem;}
+h2 {font-size: 1.15rem !important;}
+h3 {font-size: 1.0rem !important;}
+.stTabs [data-baseweb="tab-list"] {gap: 4px;}
+.stTabs [data-baseweb="tab"] {padding: 8px 12px; font-size: 0.95rem;}
+.stDataFrame {font-size: 0.85rem;}
+div[data-testid="stExpander"] {margin-bottom: 0.5rem;}
 </style>
 """, unsafe_allow_html=True)
 
 st.title("📈 국내주식 스크리너")
-st.caption("KOSPI + KOSDAQ 시총 200위 · 수정주가 기준")
-
-@st.cache_data(ttl=86400, show_spinner=False)
-def recent_business_day() -> str:
-    """KST 기준 어제부터 거꾸로 거래일 탐색"""
-    base = kst_now() - timedelta(days=1)
-    for i in range(15):
-        d = (base - timedelta(days=i)).strftime("%Y%m%d")
-        try:
-            df = stock.get_market_cap_by_ticker(d, market="KOSPI")
-            if df is not None and not df.empty and "시가총액" in df.columns and df["시가총액"].sum() > 0:
-                return d
-        except Exception:
-            continue
-    return (kst_now() - timedelta(days=7)).strftime("%Y%m%d")
-
+st.caption("KOSPI + KOSDAQ 시총 200위 · 수정주가 기준 (FDR)")
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_universe_top200() -> pd.DataFrame:
-    d = recent_business_day()
     try:
-        kospi = stock.get_market_cap_by_ticker(d, market="KOSPI")
-        kosdaq = stock.get_market_cap_by_ticker(d, market="KOSDAQ")
+        kospi = fdr.StockListing('KOSPI')
+        kosdaq = fdr.StockListing('KOSDAQ')
     except Exception as e:
-        st.error(f"KRX 시가총액 조회 실패 ({d}): {e}")
+        st.error(f"종목 리스트 조회 실패: {e}")
         return pd.DataFrame()
 
     if kospi is None or kospi.empty or kosdaq is None or kosdaq.empty:
-        st.error(f"빈 데이터 · 날짜={d}")
+        st.error("종목 리스트가 비어있습니다.")
         return pd.DataFrame()
 
-    if "시가총액" not in kospi.columns or "시가총액" not in kosdaq.columns:
-        st.error(f"'시가총액' 컬럼 누락. 컬럼: {kospi.columns.tolist()}")
+    kospi = kospi.copy(); kosdaq = kosdaq.copy()
+    kospi['시장'] = 'KOSPI'; kosdaq['시장'] = 'KOSDAQ'
+    df = pd.concat([kospi, kosdaq], ignore_index=True)
+
+    code_col = next((c for c in ['Code','Symbol','종목코드'] if c in df.columns), None)
+    name_col = next((c for c in ['Name','종목명'] if c in df.columns), None)
+    mc_col = next((c for c in ['Marcap','MarketCap','시가총액'] if c in df.columns), None)
+
+    if not all([code_col, name_col, mc_col]):
+        st.error(f"필요 컬럼 누락. 컬럼: {df.columns.tolist()}")
         return pd.DataFrame()
 
-    cap = pd.concat([kospi, kosdaq]).sort_values("시가총액", ascending=False).head(200)
-    names = []
-    for t in cap.index:
-        try:
-            names.append(stock.get_market_ticker_name(t))
-        except Exception:
-            names.append(t)
-    cap["종목명"] = names
-    cap["시장"] = ["KOSPI" if t in kospi.index else "KOSDAQ" for t in cap.index]
-    return cap
+    df = df.dropna(subset=[mc_col])
+    df = df.sort_values(mc_col, ascending=False).head(200).reset_index(drop=True)
+
+    out = pd.DataFrame({
+        '종목명': df[name_col].values,
+        '시장': df['시장'].values,
+        '시가총액': df[mc_col].values,
+    }, index=df[code_col].astype(str).str.zfill(6).values)
+    out.index.name = '티커'
+    return out
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def ohlcv_adjusted(ticker: str, start: str, end: str) -> pd.DataFrame:
+    s = yyyymmdd_to_dash(start); e = yyyymmdd_to_dash(end)
     try:
-        df = stock.get_market_ohlcv(start, end, ticker, adjusted=True)
+        df = fdr.DataReader(ticker, s, e)
         if df is None or df.empty:
             return pd.DataFrame()
-        return df
+        df = df.rename(columns={'Open':'시가','High':'고가','Low':'저가','Close':'종가','Volume':'거래량'})
+        if '거래량' not in df.columns: df['거래량'] = 0
+        return df[['시가','고가','저가','종가','거래량']]
     except Exception:
         return pd.DataFrame()
 
@@ -135,8 +121,8 @@ def new_high_screen(weeks_list=(26,52)) -> dict:
     uni = get_universe_top200()
     if uni.empty: return {w: pd.DataFrame() for w in weeks_list}
     max_w = max(weeks_list)
-    end = recent_business_day()
-    start = (datetime.strptime(end,"%Y%m%d") - timedelta(days=int(max_w*7*1.5))).strftime("%Y%m%d")
+    end = kst_now().strftime("%Y%m%d")
+    start = (kst_now() - timedelta(days=int(max_w*7*1.5))).strftime("%Y%m%d")
     results = {w: [] for w in weeks_list}
     bar = st.progress(0.0, text="신고가 스크리닝 중...")
     for i, tkr in enumerate(uni.index):
@@ -182,12 +168,10 @@ tab1, tab2 = st.tabs(["📊 기간 수익률 TOP", "🚀 신고가 스크리너"
 
 with tab1:
     st.markdown("##### 기간 설정")
-    today_kst_d = kst_now().date()
+    today_d = kst_now().date()
     c1, c2 = st.columns(2)
-    with c1:
-        sdate = st.date_input("시작일", value=today_kst_d - timedelta(days=90), key="t1_s")
-    with c2:
-        edate = st.date_input("종료일", value=today_kst_d, key="t1_e")
+    with c1: sdate = st.date_input("시작일", value=today_d - timedelta(days=90), key="t1_s")
+    with c2: edate = st.date_input("종료일", value=today_d, key="t1_e")
     top_n = st.slider("상위 종목 수", 5, 30, 20, key="t1_n")
 
     if st.button("스크리닝 실행", type="primary", key="t1_run", use_container_width=True):
@@ -201,7 +185,7 @@ with tab1:
     if "winners" in st.session_state:
         w = st.session_state["winners"]
         if w.empty:
-            st.warning("데이터를 가져오지 못했습니다. 사이드바에서 캐시를 비우고 다시 시도하세요.")
+            st.warning("결과가 비어있습니다. 사이드바에서 캐시를 비우고 다시 시도하세요.")
         else:
             st.markdown(f"##### TOP {len(w)} 결과")
             show = w[["종목명","시장","시작가","종료가","수익률(%)"]].copy()
@@ -214,8 +198,8 @@ with tab1:
             for _, row in w.iterrows():
                 tkr, name, ret = row["티커"], row["종목명"], row["수익률(%)"]
                 with st.expander(f"{name} · {tkr} · {ret:+.2f}%"):
-                    end = recent_business_day()
-                    start = (datetime.strptime(end,"%Y%m%d") - timedelta(days=365*2)).strftime("%Y%m%d")
+                    end = kst_now().strftime("%Y%m%d")
+                    start = (kst_now() - timedelta(days=365*2)).strftime("%Y%m%d")
                     daily = ohlcv_adjusted(tkr, start, end)
                     weekly = to_weekly(daily)
                     fig = plot_candle(weekly, f"{name} 주봉 (MA5, MA20)", ma_periods=[5,20])
@@ -238,8 +222,7 @@ with tab2:
 
         def render_block(df):
             if df.empty:
-                st.info("해당 종목이 없습니다.")
-                return
+                st.info("해당 종목이 없습니다."); return
             show = df[["종목명","시장","주봉 종가","주봉 고가","직전 최고"]].copy()
             for c in ["주봉 종가","주봉 고가","직전 최고"]:
                 show[c] = show[c].map(lambda x: f"{x:,.0f}")
@@ -247,8 +230,8 @@ with tab2:
             for _, row in df.iterrows():
                 tkr, name = row["티커"], row["종목명"]
                 with st.expander(f"{name} · {tkr}"):
-                    end = recent_business_day()
-                    start = (datetime.strptime(end,"%Y%m%d") - timedelta(days=365*20)).strftime("%Y%m%d")
+                    end = kst_now().strftime("%Y%m%d")
+                    start = (kst_now() - timedelta(days=365*20)).strftime("%Y%m%d")
                     with st.spinner("장기 데이터 로딩..."):
                         daily = ohlcv_adjusted(tkr, start, end)
                     if daily.empty:
@@ -267,7 +250,6 @@ with tab2:
 with st.sidebar:
     st.header("⚙️ 관리")
     st.caption(f"현재 KST: {kst_now().strftime('%Y-%m-%d %H:%M')}")
-    st.caption(f"기준 영업일: {recent_business_day()}")
     if st.button("캐시 비우기", use_container_width=True):
         st.cache_data.clear()
         for k in ["winners","hi"]:
@@ -275,4 +257,4 @@ with st.sidebar:
         st.success("캐시 비움")
         st.rerun()
     st.divider()
-    st.caption("데이터: KRX (pykrx)\n수정주가 사용")
+    st.caption("데이터: FinanceDataReader\n(네이버 금융 · 수정주가)")
