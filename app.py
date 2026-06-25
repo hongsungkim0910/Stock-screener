@@ -147,34 +147,36 @@ def plot_candle(df, title, ma_periods=None, height=380):
     if df.empty: return None
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
                         vertical_spacing=0.02, row_heights=[0.75, 0.25])
-    # 캔들
-    fig.add_trace(go.Candlestick(x=df.index, open=df["시가"], high=df["고가"], low=df["저가"], close=df["종가"],
-        name="OHLC", increasing_line_color="#ef4444", decreasing_line_color="#3b82f6",
-        increasing_fillcolor="#ef4444", decreasing_fillcolor="#3b82f6"), row=1, col=1)
-    # 이평선
+    # OHLC 바 (무채색)
+    fig.add_trace(go.Ohlc(x=df.index, open=df["시가"], high=df["고가"], low=df["저가"], close=df["종가"],
+        name="OHLC",
+        increasing=dict(line=dict(color="#374151", width=1)),
+        decreasing=dict(line=dict(color="#9ca3af", width=1))), row=1, col=1)
+    # 이평선 (무채색 톤)
     if ma_periods:
-        palette = ["#f59e0b","#10b981","#8b5cf6","#ec4899"]
+        ma_styles = [
+            dict(color="#1e3a8a", width=1.5, dash="solid"),
+            dict(color="#64748b", width=1.3, dash="dash"),
+            dict(color="#94a3b8", width=1.2, dash="dot"),
+            dict(color="#cbd5e1", width=1.2, dash="dashdot"),
+        ]
         for i, p in enumerate(ma_periods):
             if len(df) >= p:
                 ma = df["종가"].rolling(p).mean()
                 fig.add_trace(go.Scatter(x=df.index, y=ma, name=f"MA{p}",
-                    line=dict(width=1.5, color=palette[i % len(palette)])), row=1, col=1)
-    # 거래량
+                    line=ma_styles[i % len(ma_styles)]), row=1, col=1)
+    # 거래량 (옅은 회색)
     if "거래량" in df.columns and df["거래량"].sum() > 0:
-        vol_colors = ["#ef4444" if c >= o else "#3b82f6"
-                      for o, c in zip(df["시가"], df["종가"])]
-        fig.add_trace(go.Bar(x=df.index, y=df["거래량"], marker_color=vol_colors,
-                             name="거래량", showlegend=False, opacity=0.7), row=2, col=1)
+        fig.add_trace(go.Bar(x=df.index, y=df["거래량"], marker_color="#d1d5db",
+                             name="거래량", showlegend=False, opacity=0.8), row=2, col=1)
     fig.update_layout(title=dict(text=title, font=dict(size=13)),
         height=height + 100, margin=dict(l=8,r=8,t=36,b=20), showlegend=True,
         legend=dict(orientation="h", y=1.02, x=0.5, xanchor="center", font=dict(size=10)),
         plot_bgcolor="white", font=dict(size=10), dragmode="pan",
         xaxis_rangeslider_visible=False, bargap=0.1)
-    # 가격축 로그
-    fig.update_yaxes(showgrid=True, gridcolor="#e5e7eb", side="right", type="log", row=1, col=1)
-    # 거래량축 선형
-    fig.update_yaxes(showgrid=True, gridcolor="#e5e7eb", side="right", row=2, col=1)
-    fig.update_xaxes(showgrid=True, gridcolor="#e5e7eb")
+    fig.update_yaxes(showgrid=True, gridcolor="#f1f5f9", side="right", type="log", row=1, col=1)
+    fig.update_yaxes(showgrid=True, gridcolor="#f1f5f9", side="right", row=2, col=1)
+    fig.update_xaxes(showgrid=False)
     return fig
 
 
