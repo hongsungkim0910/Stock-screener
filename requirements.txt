@@ -5,4 +5,5 @@ numpy>=1.24
 plotly>=5.18
 lxml
 beautifulsoup4
+opendartreader
 requests
