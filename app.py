@@ -486,7 +486,7 @@ with tab3:
                "이면서 26주 또는 52주 주봉 신고가인 종목")
 
     if not HAS_DART:
-        st.error("OpenDartReader 미설치. requirements.txt에 `opendartreader`를 추가하세요.")
+        st.error(f"OpenDartReader 로드 실패: {DART_IMPORT_ERR}")
     elif get_dart() is None:
         st.error("DART API 키가 없습니다. Streamlit Cloud → Settings → Secrets에 "
                  "`DART_API_KEY = \"발급키\"` 를 추가하세요. "
