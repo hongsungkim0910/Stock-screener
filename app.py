@@ -16,10 +16,17 @@ from plotly.subplots import make_subplots
 from datetime import datetime, timedelta, timezone, date
 
 try:
-    import OpenDartReader
+    from opendartreader import OpenDartReader   # 0.3.x
     HAS_DART = True
-except ImportError:
-    HAS_DART = False
+    DART_IMPORT_ERR = None
+except Exception:
+    try:
+        import OpenDartReader                    # 0.2.x
+        HAS_DART = True
+        DART_IMPORT_ERR = None
+    except Exception as e:
+        HAS_DART = False
+        DART_IMPORT_ERR = f"{type(e).__name__}: {e}"
 
 KST = timezone(timedelta(hours=9))
 def kst_now(): return datetime.now(KST)
@@ -484,7 +491,7 @@ with tab3:
                "이면서 26주 또는 52주 주봉 신고가인 종목")
 
     if not HAS_DART:
-        st.error("OpenDartReader 미설치. requirements.txt에 `opendartreader`를 추가하세요.")
+        st.error(f"OpenDartReader 로드 실패: {DART_IMPORT_ERR}")
     elif get_dart() is None:
         st.error("DART API 키가 없습니다. Streamlit Cloud → Settings → Secrets에 "
                  "`DART_API_KEY = \"발급키\"` 를 추가하세요. "
