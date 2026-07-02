@@ -2,15 +2,24 @@
 """
 국내주식 스크리너 (모바일)
 데이터: FinanceDataReader (네이버 금융 기반, 수정주가)
+      + DART Open API (분기 영업이익, 다중회사 주요계정)
 """
 
+import os
+import time
 import streamlit as st
 import pandas as pd
 import numpy as np
 import FinanceDataReader as fdr
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, date
+
+try:
+    import OpenDartReader
+    HAS_DART = True
+except ImportError:
+    HAS_DART = False
 
 KST = timezone(timedelta(hours=9))
 def kst_now(): return datetime.now(KST)
@@ -32,7 +41,7 @@ div[data-testid="stExpander"] {margin-bottom: 0.5rem;}
 """, unsafe_allow_html=True)
 
 st.title("📈 국내주식 스크리너")
-st.caption("KOSPI + KOSDAQ 시총 200위 · 수정주가 기준 (FDR)")
+st.caption("KOSPI + KOSDAQ · 수정주가 기준 (FDR) · 분기실적 (DART)")
 
 st.radio("차트 스타일", ["업무 모드", "일반 모드"], horizontal=True,
          key="chart_style", label_visibility="collapsed",
@@ -73,6 +82,41 @@ def get_universe_top200() -> pd.DataFrame:
     }, index=df[code_col].astype(str).str.zfill(6).values)
     out.index.name = '티커'
     return out
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_universe_all() -> pd.DataFrame:
+    """코스피+코스닥 전체 상장종목 (영업이익 스크리너용)"""
+    try:
+        kospi = fdr.StockListing('KOSPI')
+        kosdaq = fdr.StockListing('KOSDAQ')
+    except Exception as e:
+        st.error(f"종목 리스트 조회 실패: {e}")
+        return pd.DataFrame()
+    if kospi is None or kospi.empty or kosdaq is None or kosdaq.empty:
+        return pd.DataFrame()
+
+    kospi = kospi.copy(); kosdaq = kosdaq.copy()
+    kospi['시장'] = 'KOSPI'; kosdaq['시장'] = 'KOSDAQ'
+    df = pd.concat([kospi, kosdaq], ignore_index=True)
+
+    code_col = next((c for c in ['Code','Symbol','종목코드'] if c in df.columns), None)
+    name_col = next((c for c in ['Name','종목명'] if c in df.columns), None)
+    if not all([code_col, name_col]):
+        return pd.DataFrame()
+
+    df[code_col] = df[code_col].astype(str).str.zfill(6)
+    # 보통주만 (우선주/스팩 등 코드 끝자리 0이 아닌 종목 제외)
+    df = df[df[code_col].str.endswith('0')]
+    # 스팩 제외
+    df = df[~df[name_col].str.contains('스팩', na=False)]
+
+    out = pd.DataFrame({
+        '종목명': df[name_col].values,
+        '시장': df['시장'].values,
+    }, index=df[code_col].values)
+    out.index.name = '티커'
+    return out[~out.index.duplicated(keep='first')]
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -147,6 +191,148 @@ def new_high_screen(weeks_list=(26,52)) -> dict:
     return {w: pd.DataFrame(results[w]) for w in weeks_list}
 
 
+# =====================================================================
+# DART 분기 영업이익 스크리너 (탭 3)
+# =====================================================================
+REPRT_MAP = {1: "11013", 2: "11012", 3: "11014", 4: "11011"}
+BATCH_SIZE = 90  # 다중회사 주요계정 API 배치 크기
+
+
+@st.cache_resource(show_spinner=False)
+def get_dart():
+    key = None
+    try:
+        key = st.secrets["DART_API_KEY"]
+    except Exception:
+        key = os.environ.get("DART_API_KEY")
+    if not key or not HAS_DART:
+        return None
+    try:
+        return OpenDartReader(key)
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=86400*7, show_spinner=False)
+def get_corp_map() -> pd.DataFrame:
+    """상장사 stock_code ↔ DART corp_code 매핑"""
+    dart = get_dart()
+    if dart is None: return pd.DataFrame()
+    cc = dart.corp_codes.copy()
+    cc['stock_code'] = cc['stock_code'].astype(str).str.strip()
+    cc = cc[cc['stock_code'].str.len() == 6]
+    return cc[['corp_code', 'stock_code']].drop_duplicates('stock_code')
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_cum_op(year: int, reprt_code: str, corp_codes: tuple, label: str) -> dict:
+    """다중회사 주요계정 API로 누적 영업이익 일괄 조회.
+    반환: {stock_code: 누적 영업이익(원)} — 연결(CFS) 우선, 없으면 별도(OFS)"""
+    dart = get_dart()
+    if dart is None: return {}
+    out_cfs, out_ofs = {}, {}
+    batches = [corp_codes[i:i+BATCH_SIZE] for i in range(0, len(corp_codes), BATCH_SIZE)]
+    bar = st.progress(0.0, text=f"{label} 실적 조회 중...")
+    for bi, batch in enumerate(batches):
+        bar.progress((bi+1)/len(batches), text=f"{label} 실적 조회 중... ({bi+1}/{len(batches)} 배치)")
+        try:
+            df = dart.finstate(",".join(batch), year, reprt_code=reprt_code)
+        except Exception:
+            time.sleep(1.0)
+            try:
+                df = dart.finstate(",".join(batch), year, reprt_code=reprt_code)
+            except Exception:
+                df = None
+        if df is None or df.empty:
+            time.sleep(0.4); continue
+        op = df[df['account_nm'].isin(['영업이익', '영업이익(손실)'])]
+        for _, r in op.iterrows():
+            sc = str(r.get('stock_code', '')).strip().zfill(6)
+            try:
+                amt = float(str(r['thstrm_amount']).replace(',', ''))
+            except (ValueError, TypeError):
+                continue
+            if r.get('fs_div') == 'CFS':
+                out_cfs[sc] = amt
+            else:
+                out_ofs.setdefault(sc, amt)
+        time.sleep(0.4)  # rate limit 여유
+    bar.empty()
+    return {**out_ofs, **out_cfs}  # CFS가 OFS를 덮어씀
+
+
+def single_q_op(year: int, quarter: int, corp_codes: tuple) -> dict:
+    """단일 분기 영업이익 = 당기 누적 − 직전분기 누적 (1분기는 누적 그대로)"""
+    cum_now = fetch_cum_op(year, REPRT_MAP[quarter], corp_codes, f"{year}Q{quarter}")
+    if quarter == 1:
+        return cum_now
+    cum_prev = fetch_cum_op(year, REPRT_MAP[quarter-1], corp_codes, f"{year}Q{quarter-1}(누적)")
+    return {sc: cum_now[sc] - cum_prev[sc] for sc in cum_now if sc in cum_prev}
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def op_growth_screen(year: int, quarter: int, universe_key: str) -> pd.DataFrame:
+    """유니버스 전체의 단일분기 영업이익 QoQ/YoY 성장률 테이블"""
+    uni = get_universe_all() if universe_key == "전체" else get_universe_top200()
+    if uni.empty: return pd.DataFrame()
+    cmap = get_corp_map()
+    if cmap.empty: return pd.DataFrame()
+
+    merged = uni.reset_index().merge(cmap, left_on='티커', right_on='stock_code', how='inner')
+    codes = tuple(merged['corp_code'].tolist())
+
+    q_now = single_q_op(year, quarter, codes)
+    qy, qq = (year-1, 4) if quarter == 1 else (year, quarter-1)
+    q_qoq = single_q_op(qy, qq, codes)
+    q_yoy = single_q_op(year-1, quarter, codes)
+
+    rows = []
+    for _, r in merged.iterrows():
+        sc = r['티커']
+        a, b, c = q_now.get(sc), q_qoq.get(sc), q_yoy.get(sc)
+        if a is None or b is None or c is None or b == 0 or c == 0:
+            continue
+        rows.append({
+            "티커": sc, "종목명": r['종목명'], "시장": r['시장'],
+            "영업이익(억)": a/1e8,
+            "QoQ(%)": (a-b)/abs(b)*100,
+            "YoY(%)": (a-c)/abs(c)*100,
+        })
+    return pd.DataFrame(rows)
+
+
+def check_new_high(tickers: list, weeks_list=(26, 52)) -> dict:
+    """후보 종목에 대해서만 26/52주 주봉 신고가 여부 확인"""
+    end = kst_now().strftime("%Y%m%d")
+    start = (kst_now() - timedelta(days=int(max(weeks_list)*7*1.5))).strftime("%Y%m%d")
+    out = {}
+    bar = st.progress(0.0, text="신고가 확인 중...")
+    for i, tkr in enumerate(tickers):
+        bar.progress((i+1)/len(tickers), text=f"신고가 확인 중... ({i+1}/{len(tickers)})")
+        daily = ohlcv_adjusted(tkr, start, end)
+        flags = {w: False for w in weeks_list}
+        if not daily.empty:
+            w = to_weekly(daily)
+            if not w.empty:
+                cur_high = w.iloc[-1]["고가"]
+                for nw in weeks_list:
+                    if len(w) >= nw+1 and cur_high >= w.iloc[-nw-1:-1]["고가"].max():
+                        flags[nw] = True
+        out[tkr] = flags
+    bar.empty()
+    return out
+
+
+def latest_confirmed_quarter(now: datetime):
+    """공시기한 기준 최근 확정 분기 (Q1: ~5/15, 반기: ~8/14, Q3: ~11/14, 사업보고서: ~3월말)"""
+    d = now.date(); y = d.year
+    if d >= date(y, 11, 16): return y, 3
+    if d >= date(y, 8, 16):  return y, 2
+    if d >= date(y, 5, 16):  return y, 1
+    if d >= date(y, 4, 1):   return y-1, 4
+    return y-1, 3
+
+
 def plot_candle(df, title, ma_periods=None, height=380):
     if df.empty: return None
     work = st.session_state.get("chart_style", "업무 모드") == "업무 모드"
@@ -205,7 +391,7 @@ def plot_candle(df, title, ma_periods=None, height=380):
     return fig
 
 
-tab1, tab2 = st.tabs(["📊 기간 수익률 TOP", "🚀 신고가 스크리너"])
+tab1, tab2, tab3 = st.tabs(["📊 기간 수익률 TOP", "🚀 신고가 스크리너", "💰 실적+신고가"])
 
 with tab1:
     st.markdown("##### 기간 설정")
@@ -292,14 +478,101 @@ with tab2:
         with sub1: render_block(res_26_only, "w26")
         with sub2: render_block(res[52], "w52")
 
+with tab3:
+    st.markdown("##### 영업이익 QoQ+YoY 상위 % + 신고가")
+    st.caption("직전 확정분기 단일 영업이익의 QoQ·YoY 성장률이 동시에 유니버스 상위 N% "
+               "이면서 26주 또는 52주 주봉 신고가인 종목")
+
+    if not HAS_DART:
+        st.error("OpenDartReader 미설치. requirements.txt에 `opendartreader`를 추가하세요.")
+    elif get_dart() is None:
+        st.error("DART API 키가 없습니다. Streamlit Cloud → Settings → Secrets에 "
+                 "`DART_API_KEY = \"발급키\"` 를 추가하세요. "
+                 "(GitHub Actions Secrets와는 별개입니다)")
+    else:
+        dy, dq = latest_confirmed_quarter(kst_now())
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            sel_year = st.selectbox("연도", list(range(dy, dy-3, -1)), index=0, key="t3_y")
+        with c2:
+            sel_q = st.selectbox("분기", [1, 2, 3, 4], index=dq-1, key="t3_q",
+                                 format_func=lambda x: f"{x}분기")
+        with c3:
+            pct = st.selectbox("상위 %", [5, 10, 15, 20], index=1, key="t3_pct")
+
+        c4, c5 = st.columns(2)
+        with c4:
+            uni_key = st.radio("유니버스", ["전체", "시총200"], horizontal=True, key="t3_uni",
+                               help="전체: 코스피+코스닥 보통주 전체 (첫 실행 시 5분 내외 소요)")
+        with c5:
+            positive_only = st.checkbox("영업이익 흑자만", value=True, key="t3_pos")
+
+        st.caption(f"기본값: 최근 확정분기 = {dy}년 {dq}분기 (공시기한 기준)")
+
+        if st.button("실적+신고가 스크리닝 실행", type="primary", key="t3_run", use_container_width=True):
+            with st.spinner("DART 실적 조회 중... (최초 실행은 수 분 소요, 이후 24시간 캐시)"):
+                growth = op_growth_screen(sel_year, sel_q, uni_key)
+            if growth.empty:
+                st.warning("실적 데이터를 가져오지 못했습니다. 아직 공시 전이거나 API 한도 초과일 수 있습니다.")
+            else:
+                base = growth[growth["영업이익(억)"] > 0] if positive_only else growth
+                q_cut = np.percentile(base["QoQ(%)"], 100 - pct)
+                y_cut = np.percentile(base["YoY(%)"], 100 - pct)
+                cand = base[(base["QoQ(%)"] >= q_cut) & (base["YoY(%)"] >= y_cut)].copy()
+
+                st.info(f"성장률 계산 {len(growth)}종목 → QoQ 컷 {q_cut:+.1f}% · YoY 컷 {y_cut:+.1f}% "
+                        f"→ 동시 통과 {len(cand)}종목")
+
+                if cand.empty:
+                    st.warning("조건 통과 종목이 없습니다.")
+                else:
+                    hi = check_new_high(cand["티커"].tolist(), (26, 52))
+                    cand["26주 신고가"] = cand["티커"].map(lambda t: hi[t][26])
+                    cand["52주 신고가"] = cand["티커"].map(lambda t: hi[t][52])
+                    final = cand[cand["26주 신고가"] | cand["52주 신고가"]] \
+                                .sort_values("YoY(%)", ascending=False).reset_index(drop=True)
+                    st.session_state["t3_final"] = final
+                    st.session_state["t3_meta"] = (sel_year, sel_q, pct)
+
+        if "t3_final" in st.session_state:
+            final = st.session_state["t3_final"]
+            my, mq, mpct = st.session_state.get("t3_meta", (sel_year, sel_q, pct))
+            st.markdown(f"##### 결과: {my}년 {mq}분기 · 상위 {mpct}% · {len(final)}종목")
+            if final.empty:
+                st.info("실적 조건 통과 종목 중 신고가 종목이 없습니다.")
+            else:
+                show = final[["종목명","시장","영업이익(억)","QoQ(%)","YoY(%)","26주 신고가","52주 신고가"]].copy()
+                show["영업이익(억)"] = show["영업이익(억)"].map(lambda x: f"{x:,.0f}")
+                show["QoQ(%)"] = show["QoQ(%)"].map(lambda x: f"{x:+.1f}")
+                show["YoY(%)"] = show["YoY(%)"].map(lambda x: f"{x:+.1f}")
+                show["26주 신고가"] = show["26주 신고가"].map(lambda x: "✓" if x else "")
+                show["52주 신고가"] = show["52주 신고가"].map(lambda x: "✓" if x else "")
+                st.dataframe(show, use_container_width=True)
+
+                st.markdown("##### 주봉 차트")
+                for _, row in final.iterrows():
+                    tkr, name = row["티커"], row["종목명"]
+                    tag = "52주" if row["52주 신고가"] else "26주"
+                    with st.expander(f"{name} · {tkr} · YoY {row['YoY(%)']:+.0f}% · {tag} 신고가"):
+                        end = kst_now().strftime("%Y%m%d")
+                        start = (kst_now() - timedelta(days=365*2)).strftime("%Y%m%d")
+                        daily = ohlcv_adjusted(tkr, start, end)
+                        weekly = to_weekly(daily)
+                        fig = plot_candle(weekly, f"{name} 주봉 (MA5, MA20)", ma_periods=[5,20])
+                        if fig:
+                            st.plotly_chart(fig, use_container_width=True,
+                                            config={"displayModeBar": False}, key=f"t3_{tkr}")
+                        else:
+                            st.warning("데이터 없음")
+
 with st.sidebar:
     st.header("⚙️ 관리")
     st.caption(f"현재 KST: {kst_now().strftime('%Y-%m-%d %H:%M')}")
     if st.button("캐시 비우기", use_container_width=True):
         st.cache_data.clear()
-        for k in ["winners","hi"]:
+        for k in ["winners","hi","t3_final","t3_meta"]:
             st.session_state.pop(k, None)
         st.success("캐시 비움")
         st.rerun()
     st.divider()
-    st.caption("데이터: FinanceDataReader\n(네이버 금융 · 수정주가)")
+    st.caption("데이터: FinanceDataReader (수정주가)\nDART Open API (분기실적)")
