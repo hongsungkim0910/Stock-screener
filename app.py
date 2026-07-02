@@ -16,12 +16,19 @@ from plotly.subplots import make_subplots
 from datetime import datetime, timedelta, timezone, date
 
 try:
-    import OpenDartReader
+    # 0.3.x (신버전): 소문자 패키지
+    from opendartreader import OpenDartReader
     HAS_DART = True
     DART_IMPORT_ERR = None
-except Exception as e:
-    HAS_DART = False
-    DART_IMPORT_ERR = f"{type(e).__name__}: {e}"
+except Exception:
+    try:
+        # 0.2.x (구버전): 대문자 모듈
+        import OpenDartReader
+        HAS_DART = True
+        DART_IMPORT_ERR = None
+    except Exception as e:
+        HAS_DART = False
+        DART_IMPORT_ERR = f"{type(e).__name__}: {e}"
 
 KST = timezone(timedelta(hours=9))
 def kst_now(): return datetime.now(KST)
