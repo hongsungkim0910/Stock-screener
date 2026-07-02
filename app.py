@@ -16,19 +16,10 @@ from plotly.subplots import make_subplots
 from datetime import datetime, timedelta, timezone, date
 
 try:
-    # 0.3.x (신버전): 소문자 패키지
-    from opendartreader import OpenDartReader
+    import OpenDartReader
     HAS_DART = True
-    DART_IMPORT_ERR = None
-except Exception:
-    try:
-        # 0.2.x (구버전): 대문자 모듈
-        import OpenDartReader
-        HAS_DART = True
-        DART_IMPORT_ERR = None
-    except Exception as e:
-        HAS_DART = False
-        DART_IMPORT_ERR = f"{type(e).__name__}: {e}"
+except ImportError:
+    HAS_DART = False
 
 KST = timezone(timedelta(hours=9))
 def kst_now(): return datetime.now(KST)
@@ -493,7 +484,7 @@ with tab3:
                "이면서 26주 또는 52주 주봉 신고가인 종목")
 
     if not HAS_DART:
-        st.error(f"OpenDartReader 로드 실패: {DART_IMPORT_ERR}")
+        st.error("OpenDartReader 미설치. requirements.txt에 `opendartreader`를 추가하세요.")
     elif get_dart() is None:
         st.error("DART API 키가 없습니다. Streamlit Cloud → Settings → Secrets에 "
                  "`DART_API_KEY = \"발급키\"` 를 추가하세요. "
@@ -507,11 +498,11 @@ with tab3:
             sel_q = st.selectbox("분기", [1, 2, 3, 4], index=dq-1, key="t3_q",
                                  format_func=lambda x: f"{x}분기")
         with c3:
-            pct = st.selectbox("상위 %", [5, 10, 15, 20], index=1, key="t3_pct")
+            pct = st.selectbox("상위 %", [5, 10, 15, 20], index=3, key="t3_pct")
 
         c4, c5 = st.columns(2)
         with c4:
-            uni_key = st.radio("유니버스", ["전체", "시총200"], horizontal=True, key="t3_uni",
+            uni_key = st.radio("유니버스", ["전체", "시총200"], index=1, horizontal=True, key="t3_uni",
                                help="전체: 코스피+코스닥 보통주 전체 (첫 실행 시 5분 내외 소요)")
         with c5:
             positive_only = st.checkbox("영업이익 흑자만", value=True, key="t3_pos")
