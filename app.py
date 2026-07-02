@@ -18,8 +18,10 @@ from datetime import datetime, timedelta, timezone, date
 try:
     import OpenDartReader
     HAS_DART = True
-except ImportError:
+    DART_IMPORT_ERR = None
+except Exception as e:
     HAS_DART = False
+    DART_IMPORT_ERR = f"{type(e).__name__}: {e}"
 
 KST = timezone(timedelta(hours=9))
 def kst_now(): return datetime.now(KST)
