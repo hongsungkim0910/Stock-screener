@@ -208,28 +208,15 @@ BATCH_SIZE = 90  # 다중회사 주요계정 API 배치 크기
 @st.cache_resource(show_spinner=False)
 def get_dart():
     key = None
-    key_src = None
     try:
         key = st.secrets["DART_API_KEY"]
-        key_src = "st.secrets"
     except Exception:
         key = os.environ.get("DART_API_KEY")
-        key_src = "os.environ"
-
-    # ===== DEBUG (원인 파악 후 이 블록 삭제) =====
-    st.info(
-        f"🐞 DEBUG · key 존재: {bool(key)} · 길이: {len(key) if key else 0} "
-        f"· 출처: {key_src if key else '없음'} · HAS_DART: {HAS_DART}"
-        + ("" if HAS_DART else f" · IMPORT_ERR: {DART_IMPORT_ERR}")
-    )
-    # ============================================
-
     if not key or not HAS_DART:
         return None
     try:
         return OpenDartReader(key)
-    except Exception as e:
-        st.error(f"🐞 DART 초기화 실패: {type(e).__name__}: {e}")
+    except Exception:
         return None
 
 
