@@ -2,7 +2,7 @@
 """
 주간 실적+신고가 스크리너 → 텔레그램 전송 (GitHub Actions용, Streamlit 불필요)
 
-로직: 직전 확정분기 단일 영업이익 QoQ·YoY 동시 상위 20% (흑자, 시총 200위 유니버스)
+로직: 직전 확정분기 단일 영업이익 QoQ·YoY 동시 상위 20% (흑자, 시총 300위 유니버스)
       AND 26주 또는 52주 주봉 신고가
 
 필요 환경변수 (GitHub Secrets):
@@ -37,8 +37,8 @@ TG_CHAT = os.environ["TELEGRAM_CHAT_ID_SCREENER"]
 dart = OpenDartReader(DART_KEY)
 
 
-# ------------------------------------------------------------------ 유니버스 (시총 200위)
-def get_universe_top200() -> pd.DataFrame:
+# ------------------------------------------------------------------ 유니버스 (시총 300위)
+def get_universe_top300() -> pd.DataFrame:
     kospi = fdr.StockListing("KOSPI"); kospi["시장"] = "KOSPI"
     kosdaq = fdr.StockListing("KOSDAQ"); kosdaq["시장"] = "KOSDAQ"
     df = pd.concat([kospi, kosdaq], ignore_index=True)
@@ -46,7 +46,7 @@ def get_universe_top200() -> pd.DataFrame:
     name_col = next(c for c in ["Name", "종목명"] if c in df.columns)
     mc_col = next(c for c in ["Marcap", "MarketCap", "시가총액"] if c in df.columns)
     df = df.dropna(subset=[mc_col])
-    df = df.sort_values(mc_col, ascending=False).head(200)
+    df = df.sort_values(mc_col, ascending=False).head(300)
     df[code_col] = df[code_col].astype(str).str.zfill(6)
     out = pd.DataFrame({"종목명": df[name_col].values, "시장": df["시장"].values},
                        index=df[code_col].values)
@@ -168,7 +168,7 @@ def main():
     year, quarter = latest_confirmed_quarter(now)
     print(f"기준 분기: {year}Q{quarter}")
 
-    uni = get_universe_top200()
+    uni = get_universe_top300()
     cmap = get_corp_map()
     merged = uni.reset_index().merge(cmap, left_on="티커", right_on="stock_code", how="inner")
     codes = merged["corp_code"].tolist()
@@ -220,7 +220,7 @@ def main():
     lines = [
         f"📊 주간 실적+신고가 스크리너 ({now.strftime('%Y-%m-%d')})",
         f"기준: {year}년 {quarter}분기 확정실적",
-        f"조건: 시총200 · 영업이익 QoQ·YoY 동시 상위 {TOP_PCT}% (흑자) + 26/52주 신고가",
+        f"조건: 시총300 · 영업이익 QoQ·YoY 동시 상위 {TOP_PCT}% (흑자) + 26/52주 신고가",
         f"컷오프: QoQ {q_cut:+.1f}% / YoY {y_cut:+.1f}%",
         "",
     ]
@@ -238,7 +238,7 @@ def main():
     # ---------- 메시지 ②③ 순수 신고가 목록 ----------
     def high_lines(tickers, title):
         L = [f"🚀 {title} ({now.strftime('%Y-%m-%d')})",
-             "대상: 시총 200 · 주봉 고가 기준 · ★=실적 스크리너 동시 통과",
+             "대상: 시총 300 · 주봉 고가 기준 · ★=실적 스크리너 동시 통과",
              ""]
         if not tickers:
             L.append("해당 종목 없음")
