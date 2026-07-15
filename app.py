@@ -55,7 +55,7 @@ st.radio("차트 스타일", ["업무 모드", "일반 모드"], horizontal=True
          help="업무 모드: 무채색 OHLC 바 · 일반 모드: 빨파 캔들")
 
 @st.cache_data(ttl=86400, show_spinner=False)
-def get_universe_top200() -> pd.DataFrame:
+def get_universe_top300() -> pd.DataFrame:
     try:
         kospi = fdr.StockListing('KOSPI')
         kosdaq = fdr.StockListing('KOSDAQ')
@@ -80,7 +80,7 @@ def get_universe_top200() -> pd.DataFrame:
         return pd.DataFrame()
 
     df = df.dropna(subset=[mc_col])
-    df = df.sort_values(mc_col, ascending=False).head(200).reset_index(drop=True)
+    df = df.sort_values(mc_col, ascending=False).head(300).reset_index(drop=True)
 
     out = pd.DataFrame({
         '종목명': df[name_col].values,
@@ -155,7 +155,7 @@ def to_quarterly(df):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def period_winners(start: str, end: str, top_n: int) -> pd.DataFrame:
-    uni = get_universe_top200()
+    uni = get_universe_top300()
     if uni.empty: return pd.DataFrame()
     rows = []
     bar = st.progress(0.0, text="기간 수익률 계산 중...")
@@ -174,7 +174,7 @@ def period_winners(start: str, end: str, top_n: int) -> pd.DataFrame:
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def new_high_screen(weeks_list=(26,52)) -> dict:
-    uni = get_universe_top200()
+    uni = get_universe_top300()
     if uni.empty: return {w: pd.DataFrame() for w in weeks_list}
     max_w = max(weeks_list)
     end = kst_now().strftime("%Y%m%d")
@@ -280,7 +280,7 @@ def single_q_op(year: int, quarter: int, corp_codes: tuple) -> dict:
 @st.cache_data(ttl=86400, show_spinner=False)
 def op_growth_screen(year: int, quarter: int, universe_key: str) -> pd.DataFrame:
     """유니버스 전체의 단일분기 영업이익 QoQ/YoY 성장률 테이블"""
-    uni = get_universe_all() if universe_key == "전체" else get_universe_top200()
+    uni = get_universe_all() if universe_key == "전체" else get_universe_top300()
     if uni.empty: return pd.DataFrame()
     cmap = get_corp_map()
     if cmap.empty: return pd.DataFrame()
@@ -509,7 +509,7 @@ with tab3:
 
         c4, c5 = st.columns(2)
         with c4:
-            uni_key = st.radio("유니버스", ["전체", "시총200"], index=1, horizontal=True, key="t3_uni",
+            uni_key = st.radio("유니버스", ["전체", "시총300"], index=1, horizontal=True, key="t3_uni",
                                help="전체: 코스피+코스닥 보통주 전체 (첫 실행 시 5분 내외 소요)")
         with c5:
             positive_only = st.checkbox("영업이익 흑자만", value=True, key="t3_pos")
