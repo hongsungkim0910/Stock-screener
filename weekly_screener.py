@@ -115,22 +115,33 @@ def to_weekly(df: pd.DataFrame) -> pd.DataFrame:
     ).dropna(subset=["Close"])
 
 
-def check_new_high(ticker: str, weeks_list=(26, 52)) -> dict:
+def scan_new_highs(uni: pd.DataFrame, weeks_list=(26, 52)) -> dict:
+    """유니버스 전체 1회 스캔 → {티커: {26: bool, 52: bool, 'close': 주봉종가}}
+    실적 교집합과 순수 신고가 목록 양쪽에서 재사용"""
     now = datetime.now(KST)
     start = (now - timedelta(days=int(max(weeks_list)*7*1.5))).strftime("%Y-%m-%d")
-    flags = {w: False for w in weeks_list}
-    try:
-        daily = fdr.DataReader(ticker, start, now.strftime("%Y-%m-%d"))
-        if daily is None or daily.empty:
-            return flags
-        w = to_weekly(daily)
-        cur_high = w.iloc[-1]["High"]
-        for nw in weeks_list:
-            if len(w) >= nw+1 and cur_high >= w.iloc[-nw-1:-1]["High"].max():
-                flags[nw] = True
-    except Exception:
-        pass
-    return flags
+    end = now.strftime("%Y-%m-%d")
+    out = {}
+    for i, tkr in enumerate(uni.index, 1):
+        if i % 20 == 0:
+            print(f"  신고가 스캔: {i}/{len(uni)}")
+        flags = {w: False for w in weeks_list}
+        close = None
+        try:
+            daily = fdr.DataReader(tkr, start, end)
+            if daily is not None and not daily.empty:
+                w = to_weekly(daily)
+                if not w.empty:
+                    cur_high = w.iloc[-1]["High"]
+                    close = w.iloc[-1]["Close"]
+                    for nw in weeks_list:
+                        if len(w) >= nw+1 and cur_high >= w.iloc[-nw-1:-1]["High"].max():
+                            flags[nw] = True
+        except Exception:
+            pass
+        out[tkr] = {**flags, "close": close}
+        time.sleep(0.2)
+    return out
 
 
 # ------------------------------------------------------------------ 텔레그램
@@ -185,16 +196,27 @@ def main():
     cand = g[(g["qoq"] >= q_cut) & (g["yoy"] >= y_cut)].copy()
     print(f"QoQ컷 {q_cut:+.1f}% / YoY컷 {y_cut:+.1f}% → 후보 {len(cand)}종목")
 
+    # 유니버스 전체 신고가 1회 스캔 (실적 교집합 + 순수 신고가 목록에 공용)
+    print("신고가 스캔 시작 (유니버스 전체)")
+    hi_map = scan_new_highs(uni)
+
     finals = []
     for _, r in cand.iterrows():
-        hi = check_new_high(r["티커"])
+        hi = hi_map.get(r["티커"], {26: False, 52: False})
         if hi[26] or hi[52]:
             finals.append({**r.to_dict(), "h26": hi[26], "h52": hi[52]})
-        time.sleep(0.2)
     finals = sorted(finals, key=lambda x: x["yoy"], reverse=True)
-    print(f"최종: {len(finals)}종목")
+    print(f"실적+신고가 최종: {len(finals)}종목")
 
-    # 메시지 구성
+    earnings_set = {s["티커"] for s in finals}
+
+    # 순수 신고가 목록 (52주 / 26주만) — 52주 신고가는 정의상 26주 신고가이므로 분리
+    hi52 = [t for t in uni.index if hi_map.get(t, {}).get(52)]
+    hi26_only = [t for t in uni.index
+                 if hi_map.get(t, {}).get(26) and not hi_map.get(t, {}).get(52)]
+    print(f"52주 신고가: {len(hi52)}종목 / 26주만 신고가: {len(hi26_only)}종목")
+
+    # ---------- 메시지 ① 실적+신고가 (기존) ----------
     lines = [
         f"📊 주간 실적+신고가 스크리너 ({now.strftime('%Y-%m-%d')})",
         f"기준: {year}년 {quarter}분기 확정실적",
@@ -212,6 +234,24 @@ def main():
                 f"   영업이익 {s['op']:,.0f}억 · QoQ {s['qoq']:+.0f}% · YoY {s['yoy']:+.0f}%"
             )
     send_telegram("\n".join(lines))
+
+    # ---------- 메시지 ②③ 순수 신고가 목록 ----------
+    def high_lines(tickers, title):
+        L = [f"🚀 {title} ({now.strftime('%Y-%m-%d')})",
+             "대상: 시총 200 · 주봉 고가 기준 · ★=실적 스크리너 동시 통과",
+             ""]
+        if not tickers:
+            L.append("해당 종목 없음")
+        else:
+            for i, t in enumerate(tickers, 1):
+                star = " ★" if t in earnings_set else ""
+                close = hi_map[t].get("close")
+                px = f" · {close:,.0f}원" if close else ""
+                L.append(f"{i}. {uni.loc[t,'종목명']} ({t}·{uni.loc[t,'시장']}){px}{star}")
+        return "\n".join(L)
+
+    send_telegram(high_lines(hi52, "52주 신고가"))
+    send_telegram(high_lines(hi26_only, "26주 신고가 (52주 제외)"))
     print("텔레그램 전송 완료")
 
 
