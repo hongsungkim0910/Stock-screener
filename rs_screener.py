@@ -34,6 +34,7 @@ MCAP_DROP_PCT = 20       # 시총 하위 20% 제외
 VALUE_DROP_PCT = 30      # 20일 평균 거래대금 하위 30% 제외
 VALUE_WINDOW = 20        # 거래대금 평균 기간 (거래일)
 MIN_HISTORY_DAYS = 60    # 신규상장 최소 이력 (거래일, 약 3개월)
+SEND_MCAP_TOP_PCT = 30   # 텔레그램 발송: 랭킹 대상 중 시총 상위 30%만
 RS_CUT = 90              # 발송 기준 RS
 MAX_SEND = 50            # 발송 종목 수 상한
 CSV_PATH = "docs/rs_latest.csv"
@@ -115,7 +116,8 @@ def scan_rs(uni: pd.DataFrame, sleep: float = 0.1) -> pd.DataFrame:
             tail = daily.tail(VALUE_WINDOW)
             value20 = float((tail["Close"] * tail.get("Volume", 0)).mean())
             rows.append({"티커": tkr, "종목명": uni.loc[tkr, "종목명"],
-                         "시장": uni.loc[tkr, "시장"], "거래대금20": value20, **r})
+                         "시장": uni.loc[tkr, "시장"], "시총": uni.loc[tkr, "시총"],
+                         "거래대금20": value20, **r})
         except Exception:
             pass
         time.sleep(sleep)
@@ -160,12 +162,14 @@ def main():
     ranked = rank_rs(raw)
     print(f"거래대금 필터 후 랭킹 대상: {len(ranked)}종목")
 
-    top = ranked[ranked["RS"] >= RS_CUT].head(MAX_SEND)
-    print(f"RS {RS_CUT}+ : {len(top)}종목")
+    mc_send_cut = np.percentile(ranked["시총"], 100 - SEND_MCAP_TOP_PCT)
+    send_pool = ranked[ranked["시총"] >= mc_send_cut]
+    top = send_pool[send_pool["RS"] >= RS_CUT].head(MAX_SEND)
+    print(f"발송 시총컷(상위 {SEND_MCAP_TOP_PCT}%): {mc_send_cut/1e8:,.0f}억 → RS {RS_CUT}+ : {len(top)}종목")
 
     # Streamlit 탭용 CSV (전체 랭킹 저장 — 탭에서 자유롭게 필터)
     os.makedirs(os.path.dirname(CSV_PATH), exist_ok=True)
-    cols = ["종목명", "시장", "RS", "신규", "r3", "r6", "r9", "r12", "close", "거래대금20"]
+    cols = ["종목명", "시장", "RS", "신규", "시총", "r3", "r6", "r9", "r12", "close", "거래대금20"]
     ranked[cols].to_csv(CSV_PATH, encoding="utf-8-sig")
     print(f"{CSV_PATH} 저장 완료")
 
@@ -173,6 +177,7 @@ def main():
         f"📈 주간 RS 상대강도 스크리너 ({now.strftime('%Y-%m-%d')})",
         f"조건: 전체 보통주 · 시총 하위 {MCAP_DROP_PCT}% 및 "
         f"20일 거래대금 하위 {VALUE_DROP_PCT}% 제외 · RS {RS_CUT} 이상",
+        f"발송: 시총 상위 {SEND_MCAP_TOP_PCT}% (컷 {mc_send_cut/1e8:,.0f}억) · 전체 랭킹은 웹앱 RS 탭",
         f"점수: 3개월×2 + 6 + 9 + 12개월 수익률 (수정주가) · 🆕=상장 12개월 미만",
         "",
     ]
