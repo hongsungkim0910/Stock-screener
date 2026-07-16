@@ -582,7 +582,8 @@ with st.sidebar:
             st.session_state.pop(k, None)
         st.success("캐시 비움")
         st.rerun()
+    st.divider()
+    st.caption("데이터: FinanceDataReader (수정주가)\nDART Open API (분기실적)")
+
 with tab4:
     render_rs_tab(ohlcv_adjusted, to_weekly, plot_candle)
-      st.divider()
-    st.caption("데이터: FinanceDataReader (수정주가)\nDART Open API (분기실적)")
