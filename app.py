@@ -14,6 +14,7 @@ import FinanceDataReader as fdr
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta, timezone, date
+from rs_tab import render_rs_tab
 
 try:
     from opendartreader import OpenDartReader   # 0.3.x
@@ -398,7 +399,7 @@ def plot_candle(df, title, ma_periods=None, height=380):
     return fig
 
 
-tab1, tab2, tab3 = st.tabs(["📊 기간 수익률 TOP", "🚀 신고가 스크리너", "💰 실적+신고가"])
+tab1, tab2, tab3, tab4 = st.tabs(["📊 기간 수익률 TOP", "🚀 신고가 스크리너", "💰 실적+신고가", "📈 RS 상대강도"])
 
 with tab1:
     st.markdown("##### 기간 설정")
@@ -581,5 +582,7 @@ with st.sidebar:
             st.session_state.pop(k, None)
         st.success("캐시 비움")
         st.rerun()
-    st.divider()
+with tab4:
+    render_rs_tab(ohlcv_adjusted, to_weekly, plot_candle)
+      st.divider()
     st.caption("데이터: FinanceDataReader (수정주가)\nDART Open API (분기실적)")
