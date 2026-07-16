@@ -35,7 +35,8 @@ def render_rs_tab(ohlcv_adjusted=None, to_weekly=None, plot_candle=None):
     st.caption(
         "점수 = 3개월 수익률×2 + 6 + 9 + 12개월 (수정주가) → 백분위 1~99. "
         "유니버스: 전체 보통주, 시총 하위 20%·20일 거래대금 하위 30% 제외. "
-        "🆕=상장 12개월 미만(부족 기간은 상장 후 수익률 대체). 매주 토요일 자동 갱신."
+        "🆕=상장 12개월 미만(부족 기간은 상장 후 수익률 대체). 매주 토요일 자동 갱신. "
+        "텔레그램은 시총 상위 30%만 발송 — 여기서는 슬라이더로 전체 열람 가능."
     )
     try:
         df, updated = load_rs()
@@ -45,12 +46,19 @@ def render_rs_tab(ohlcv_adjusted=None, to_weekly=None, plot_candle=None):
 
     st.caption(f"데이터 기준: {updated} · 랭킹 대상 {len(df):,}종목")
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2 = st.columns(2)
     rs_min = c1.slider("RS 하한", 1, 99, 90)
-    market = c2.selectbox("시장", ["전체", "KOSPI", "KOSDAQ"])
-    only_new = c3.checkbox("신규상장만 (🆕)", value=False)
+    mcap_top = c2.slider("시총 상위 % 이내", 10, 100, 30, step=10,
+                         help="100 = 전체 표시. 텔레그램 발송 기본값은 30")
+    c3, c4 = st.columns(2)
+    market = c3.selectbox("시장", ["전체", "KOSPI", "KOSDAQ"])
+    only_new = c4.checkbox("신규상장만 (🆕)", value=False)
 
     view = df[df["RS"] >= rs_min]
+    if "시총" in df.columns and mcap_top < 100:
+        import numpy as np
+        mc_cut = np.percentile(df["시총"], 100 - mcap_top)
+        view = view[view["시총"] >= mc_cut]
     if market != "전체":
         view = view[view["시장"] == market]
     if only_new and "신규" in view.columns:
@@ -62,13 +70,17 @@ def render_rs_tab(ohlcv_adjusted=None, to_weekly=None, plot_candle=None):
         show["종목명"] = show.apply(
             lambda r: f"{r['종목명']} 🆕" if r["신규"] else r["종목명"], axis=1)
         show = show.drop(columns=["신규"])
+    if "시총" in show.columns:
+        show["시총(억)"] = show["시총"] / 1e8
+        show = show.drop(columns=["시총"])
     show = show.rename(columns={"r3": "3개월%", "r6": "6개월%", "r9": "9개월%",
                                 "r12": "12개월%", "close": "종가",
                                 "거래대금20": "거래대금(20일평균)"})
     st.dataframe(
         show.style.format({"3개월%": "{:+.0f}", "6개월%": "{:+.0f}",
                            "9개월%": "{:+.0f}", "12개월%": "{:+.0f}",
-                           "종가": "{:,.0f}", "거래대금(20일평균)": "{:,.0f}"}),
+                           "종가": "{:,.0f}", "거래대금(20일평균)": "{:,.0f}",
+                           "시총(억)": "{:,.0f}"}),
         use_container_width=True, height=480,
     )
 
