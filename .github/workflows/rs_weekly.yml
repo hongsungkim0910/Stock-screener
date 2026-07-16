@@ -1,0 +1,39 @@
+# .github/workflows/rs_weekly.yml
+# 주간 RS 스크리너: 매주 토요일 09:00 KST (금요일 장 마감 데이터 확정 후)
+name: weekly-rs-screener
+
+on:
+  schedule:
+    - cron: "0 0 * * 6"   # 토 00:00 UTC = 토 09:00 KST
+  workflow_dispatch:        # 수동 실행용
+
+permissions:
+  contents: write           # docs/rs_latest.csv 커밋에 필요
+
+jobs:
+  rs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: pip install pandas numpy requests finance-datareader
+
+      - name: Run RS screener
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID_SCREENER: ${{ secrets.TELEGRAM_CHAT_ID_SCREENER }}
+        run: python rs_screener.py
+
+      - name: Commit rs_latest.csv
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/rs_latest.csv
+          git diff --cached --quiet || git commit -m "chore: weekly RS update $(date +%F)"
+          git push
