@@ -34,7 +34,7 @@ MCAP_DROP_PCT = 20       # 시총 하위 20% 제외
 VALUE_DROP_PCT = 30      # 20일 평균 거래대금 하위 30% 제외
 VALUE_WINDOW = 20        # 거래대금 평균 기간 (거래일)
 MIN_HISTORY_DAYS = 60    # 신규상장 최소 이력 (거래일, 약 3개월)
-SEND_MCAP_TOP_PCT = 30   # 텔레그램 발송: 랭킹 대상 중 시총 상위 30%만
+SEND_MCAP_TOP_PCT = 30   # 텔레그램: 시총 상위 30%를 위 섹션, 나머지를 아래 섹션에 배치
 RS_CUT = 90              # 발송 기준 RS
 MAX_SEND = 50            # 발송 종목 수 상한
 CSV_PATH = "docs/rs_latest.csv"
@@ -163,9 +163,11 @@ def main():
     print(f"거래대금 필터 후 랭킹 대상: {len(ranked)}종목")
 
     mc_send_cut = np.percentile(ranked["시총"], 100 - SEND_MCAP_TOP_PCT)
-    send_pool = ranked[ranked["시총"] >= mc_send_cut]
-    top = send_pool[send_pool["RS"] >= RS_CUT].head(MAX_SEND)
-    print(f"발송 시총컷(상위 {SEND_MCAP_TOP_PCT}%): {mc_send_cut/1e8:,.0f}억 → RS {RS_CUT}+ : {len(top)}종목")
+    rs_pass = ranked[ranked["RS"] >= RS_CUT]
+    top_big = rs_pass[rs_pass["시총"] >= mc_send_cut].head(MAX_SEND)
+    top_small = rs_pass[rs_pass["시총"] < mc_send_cut].head(MAX_SEND)
+    print(f"시총컷(상위 {SEND_MCAP_TOP_PCT}%): {mc_send_cut/1e8:,.0f}억 → "
+          f"RS {RS_CUT}+ 상위그룹 {len(top_big)} / 하위그룹 {len(top_small)}종목")
 
     # Streamlit 탭용 CSV (전체 랭킹 저장 — 탭에서 자유롭게 필터)
     os.makedirs(os.path.dirname(CSV_PATH), exist_ok=True)
@@ -173,23 +175,28 @@ def main():
     ranked[cols].to_csv(CSV_PATH, encoding="utf-8-sig")
     print(f"{CSV_PATH} 저장 완료")
 
+    def stock_lines(df):
+        L = []
+        for i, (tkr, s) in enumerate(df.iterrows(), 1):
+            new_tag = " 🆕" if s["신규"] else ""
+            L.append(
+                f"{i}. {s['종목명']} ({tkr}·{s['시장']}) RS {s['RS']}{new_tag}\n"
+                f"   시총 {s['시총']/1e8:,.0f}억 · 3M {s['r3']:+.0f}% · "
+                f"12M {s['r12']:+.0f}% · {s['close']:,.0f}원"
+            )
+        return L if L else ["해당 종목 없음"]
+
     lines = [
         f"📈 주간 RS 상대강도 스크리너 ({now.strftime('%Y-%m-%d')})",
         f"조건: 전체 보통주 · 시총 하위 {MCAP_DROP_PCT}% 및 "
         f"20일 거래대금 하위 {VALUE_DROP_PCT}% 제외 · RS {RS_CUT} 이상",
-        f"발송: 시총 상위 {SEND_MCAP_TOP_PCT}% (컷 {mc_send_cut/1e8:,.0f}억) · 전체 랭킹은 웹앱 RS 탭",
         f"점수: 3개월×2 + 6 + 9 + 12개월 수익률 (수정주가) · 🆕=상장 12개월 미만",
         "",
+        f"■ 시총 상위 {SEND_MCAP_TOP_PCT}% (컷 {mc_send_cut/1e8:,.0f}억)",
     ]
-    if top.empty:
-        lines.append("해당 종목 없음")
-    else:
-        for i, (tkr, s) in enumerate(top.iterrows(), 1):
-            new_tag = " 🆕" if s["신규"] else ""
-            lines.append(
-                f"{i}. {s['종목명']} ({tkr}·{s['시장']}) RS {s['RS']}{new_tag}\n"
-                f"   3M {s['r3']:+.0f}% · 12M {s['r12']:+.0f}% · {s['close']:,.0f}원"
-            )
+    lines += stock_lines(top_big)
+    lines += ["", f"■ 시총 상위 {SEND_MCAP_TOP_PCT}% 미만"]
+    lines += stock_lines(top_small)
     send_telegram("\n".join(lines))
     print("텔레그램 전송 완료")
 
