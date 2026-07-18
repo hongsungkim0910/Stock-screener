@@ -36,7 +36,9 @@ def render_rs_tab(ohlcv_adjusted=None, to_weekly=None, plot_candle=None):
         "점수 = 3개월 수익률×2 + 6 + 9 + 12개월 (수정주가) → 백분위 1~99. "
         "유니버스: 전체 보통주, 시총 하위 20%·20일 거래대금 하위 30% 제외. "
         "🆕=상장 12개월 미만(부족 기간은 상장 후 수익률 대체). 매주 토요일 자동 갱신. "
-        "텔레그램은 시총 상위 30%만 발송 — 여기서는 슬라이더로 전체 열람 가능."
+        "텔레그램은 시총 상위 30%만 발송 — 여기서는 슬라이더로 전체 열람 가능. "
+        "Clenow=90일 회귀 기울기×R²(추세 지속성), FIP=양봉일-음봉일 비율(%p), "
+        "⚡=FIP 하위 30%(급등락으로 만든 수익률 주의)."
     )
     try:
         df, updated = load_rs()
@@ -54,6 +56,15 @@ def render_rs_tab(ohlcv_adjusted=None, to_weekly=None, plot_candle=None):
     market = c3.selectbox("시장", ["전체", "KOSPI", "KOSDAQ"])
     only_new = c4.checkbox("신규상장만 (🆕)", value=False)
 
+    has_trend = "clenow" in df.columns
+    if has_trend:
+        sort_by = st.radio("정렬", ["Clenow 추세점수순", "RS 점수순"],
+                           horizontal=True,
+                           help="Clenow = 90일 로그가격 회귀 기울기×R². "
+                                "높을수록 급등락 없이 꾸준히 오른 종목.")
+    else:
+        sort_by = "RS 점수순"
+
     view = df[df["RS"] >= rs_min]
     if "시총" in df.columns and mcap_top < 100:
         import numpy as np
@@ -64,8 +75,19 @@ def render_rs_tab(ohlcv_adjusted=None, to_weekly=None, plot_candle=None):
     if only_new and "신규" in view.columns:
         view = view[view["신규"] == True]  # noqa: E712
 
+    if has_trend and sort_by == "Clenow 추세점수순":
+        view = view.sort_values("clenow", ascending=False, na_position="last")
+
     st.markdown(f"##### 결과 {len(view)}종목")
     show = view.copy()
+    if has_trend:
+        import numpy as np
+        fip_warn = np.nanpercentile(df["fip"], 30)
+        show["종목명"] = show.apply(
+            lambda r: f"{r['종목명']} ⚡"
+            if pd.notna(r.get("fip")) and r["fip"] < fip_warn else r["종목명"], axis=1)
+        show["FIP"] = (show["fip"] * 100).round(0)
+        show = show.drop(columns=["fip"]).rename(columns={"clenow": "Clenow"})
     if "신규" in show.columns:
         show["종목명"] = show.apply(
             lambda r: f"{r['종목명']} 🆕" if r["신규"] else r["종목명"], axis=1)
@@ -80,7 +102,8 @@ def render_rs_tab(ohlcv_adjusted=None, to_weekly=None, plot_candle=None):
         show.style.format({"3개월%": "{:+.0f}", "6개월%": "{:+.0f}",
                            "9개월%": "{:+.0f}", "12개월%": "{:+.0f}",
                            "종가": "{:,.0f}", "거래대금(20일평균)": "{:,.0f}",
-                           "시총(억)": "{:,.0f}"}),
+                           "시총(억)": "{:,.0f}",
+                           "Clenow": "{:.1f}", "FIP": "{:+.0f}"}),
         use_container_width=True, height=480,
     )
 
