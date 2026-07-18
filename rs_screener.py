@@ -37,6 +37,8 @@ MIN_HISTORY_DAYS = 60    # 신규상장 최소 이력 (거래일, 약 3개월)
 SEND_MCAP_TOP_PCT = 30   # 텔레그램: 시총 상위 30%를 위 섹션, 나머지를 아래 섹션에 배치
 RS_CUT = 90              # 발송 기준 RS
 MAX_SEND = 50            # 발송 종목 수 상한
+CLENOW_WINDOW = 90       # Clenow/FIP 계산 거래일 수
+FIP_WARN_PCT = 30        # FIP 하위 30%면 ⚡(급등락 주의) 마커
 CSV_PATH = "docs/rs_latest.csv"
 
 TG_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
@@ -69,6 +71,36 @@ def get_universe() -> pd.DataFrame:
                        index=df[code_col].values)
     out.index.name = "티커"
     return out[~out.index.duplicated(keep="first")]
+
+
+# ------------------------------------------------------------------ 추세 지속성 (Clenow · FIP)
+def clenow_score(closes: np.ndarray, window: int = CLENOW_WINDOW) -> float:
+    """로그가격 지수회귀: 연환산 기울기 × R².
+    많이 올랐으면서(기울기) 직선처럼 꾸준히 오른(R²) 종목일수록 높음."""
+    if len(closes) < window:
+        return np.nan
+    y = np.log(closes[-window:])
+    if np.any(~np.isfinite(y)):
+        return np.nan
+    x = np.arange(window, dtype=float)
+    slope, intercept = np.polyfit(x, y, 1)
+    fitted = slope * x + intercept
+    ss_tot = np.sum((y - y.mean()) ** 2)
+    r2 = 1.0 - np.sum((y - fitted) ** 2) / ss_tot if ss_tot > 0 else 0.0
+    return (np.exp(slope * 252) - 1.0) * r2
+
+
+def fip_score(closes: np.ndarray, window: int = CLENOW_WINDOW) -> float:
+    """양봉일 비율 - 음봉일 비율 (-1~1). 높을수록 '곱게' 오른 종목,
+    낮으면 갭 급등 몇 방으로 만든 수익률일 가능성."""
+    c = closes[-(window + 1):]
+    if len(c) < window + 1:
+        return np.nan
+    ret = np.diff(c)
+    ret = ret[np.isfinite(ret)]
+    if len(ret) == 0:
+        return np.nan
+    return float((ret > 0).mean() - (ret < 0).mean())
 
 
 # ------------------------------------------------------------------ RS 계산
@@ -115,9 +147,12 @@ def scan_rs(uni: pd.DataFrame, sleep: float = 0.1) -> pd.DataFrame:
                 continue
             tail = daily.tail(VALUE_WINDOW)
             value20 = float((tail["Close"] * tail.get("Volume", 0)).mean())
+            closes_arr = daily["Close"].values.astype(float)
             rows.append({"티커": tkr, "종목명": uni.loc[tkr, "종목명"],
                          "시장": uni.loc[tkr, "시장"], "시총": uni.loc[tkr, "시총"],
-                         "거래대금20": value20, **r})
+                         "거래대금20": value20,
+                         "clenow": clenow_score(closes_arr),
+                         "fip": fip_score(closes_arr), **r})
         except Exception:
             pass
         time.sleep(sleep)
@@ -163,7 +198,11 @@ def main():
     print(f"거래대금 필터 후 랭킹 대상: {len(ranked)}종목")
 
     mc_send_cut = np.percentile(ranked["시총"], 100 - SEND_MCAP_TOP_PCT)
-    rs_pass = ranked[ranked["RS"] >= RS_CUT]
+    # 2차 정렬: RS 통과 종목을 Clenow(추세 지속성) 순으로 재정렬
+    rs_pass = ranked[ranked["RS"] >= RS_CUT].sort_values(
+        "clenow", ascending=False, na_position="last")
+    # FIP 하위 30% 컷 (유니버스 전체 기준) → ⚡ 급등락 주의 마커
+    fip_warn_cut = np.nanpercentile(ranked["fip"], FIP_WARN_PCT)
     top_big = rs_pass[rs_pass["시총"] >= mc_send_cut].head(MAX_SEND)
     top_small = rs_pass[rs_pass["시총"] < mc_send_cut].head(MAX_SEND)
     print(f"시총컷(상위 {SEND_MCAP_TOP_PCT}%): {mc_send_cut/1e8:,.0f}억 → "
@@ -171,7 +210,8 @@ def main():
 
     # Streamlit 탭용 CSV (전체 랭킹 저장 — 탭에서 자유롭게 필터)
     os.makedirs(os.path.dirname(CSV_PATH), exist_ok=True)
-    cols = ["종목명", "시장", "RS", "신규", "시총", "r3", "r6", "r9", "r12", "close", "거래대금20"]
+    cols = ["종목명", "시장", "RS", "clenow", "fip", "신규", "시총",
+            "r3", "r6", "r9", "r12", "close", "거래대금20"]
     ranked[cols].to_csv(CSV_PATH, encoding="utf-8-sig")
     print(f"{CSV_PATH} 저장 완료")
 
@@ -179,9 +219,11 @@ def main():
         L = []
         for i, (tkr, s) in enumerate(df.iterrows(), 1):
             new_tag = " 🆕" if s["신규"] else ""
+            warn_tag = " ⚡" if (np.isfinite(s["fip"]) and s["fip"] < fip_warn_cut) else ""
+            cln = f"C {s['clenow']:.1f}" if np.isfinite(s["clenow"]) else "C -"
             L.append(
-                f"{i}. {s['종목명']} ({tkr}·{s['시장']}) RS {s['RS']}{new_tag}\n"
-                f"   시총 {s['시총']/1e8:,.0f}억 · 3M {s['r3']:+.0f}% · "
+                f"{i}. {s['종목명']} ({tkr}·{s['시장']}) RS {s['RS']}{new_tag}{warn_tag}\n"
+                f"   {cln} · 시총 {s['시총']/1e8:,.0f}억 · 3M {s['r3']:+.0f}% · "
                 f"12M {s['r12']:+.0f}% · {s['close']:,.0f}원"
             )
         return L if L else ["해당 종목 없음"]
@@ -191,6 +233,8 @@ def main():
         f"조건: 전체 보통주 · 시총 하위 {MCAP_DROP_PCT}% 및 "
         f"20일 거래대금 하위 {VALUE_DROP_PCT}% 제외 · RS {RS_CUT} 이상",
         f"점수: 3개월×2 + 6 + 9 + 12개월 수익률 (수정주가) · 🆕=상장 12개월 미만",
+        f"정렬: Clenow 추세점수(90일 회귀 기울기×R²) 순 · "
+        f"⚡=FIP 하위 {FIP_WARN_PCT}% (급등락으로 만든 수익률 주의)",
         "",
         f"■ 시총 상위 {SEND_MCAP_TOP_PCT}% (컷 {mc_send_cut/1e8:,.0f}억)",
     ]
